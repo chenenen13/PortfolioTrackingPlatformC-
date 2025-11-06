@@ -3,6 +3,8 @@
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <StaticWebAssetBasePath>/PortfolioTrackingPlatformC-</StaticWebAssetBasePath>
+
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="NewsAPI" Version="0.7.0" />
