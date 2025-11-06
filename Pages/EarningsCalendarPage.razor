@@ -1,0 +1,149 @@
+@page "/earnings"
+
+@using System
+@using System.Linq
+@using System.Collections.Generic
+@using TradingPlatform.Models
+@using TradingPlatform.Services
+@using TradingPlatform.Services.Abstractions
+
+@inject WatchlistService Watchlist
+@inject IPortfolioService PortfolioSvc
+@inject IEarningsService EarningsSvc
+
+<h3>Prochains Earnings (Watchlist + Portfolio)</h3>
+
+<div class="mb-3">
+    <button class="btn btn-sm btn-primary" @onclick="ReloadAsync" disabled="@(loading)">
+        @(loading ? "Chargement…" : "Rafraîchir")
+    </button>
+    <span class="ms-2 text-muted">Fuseau local : @TimeZoneInfo.Local.DisplayName</span>
+</div>
+
+@if (error is not null)
+{
+    <div class="alert alert-warning">@error</div>
+}
+
+@if (loading && earnings.Count == 0)
+{
+    <p>Chargement des données…</p>
+}
+else if (!earnings.Any(e => e.EarningsDateUtc is not null))
+{
+    <p>Aucun earnings à venir trouvé.</p>
+}
+else
+{
+    @foreach (var group in earnings
+        .Where(e => e.EarningsDateUtc is not null)
+        .GroupBy(e =>
+            new
+            {
+                Year = ToLocal(e.EarningsDateUtc)!.Value.Year,
+                Month = ToLocal(e.EarningsDateUtc)!.Value.Month
+            })
+        .OrderBy(g => g.Key.Year).ThenBy(g => g.Key.Month))
+    {
+        var year = group.Key.Year;
+        var month = group.Key.Month;
+        <h5 class="mt-4">@((new DateTime(year, month, 1)).ToString("MMMM yyyy"))</h5>
+
+        <table class="table table-sm">
+            <thead>
+                <tr>
+                    <th style="width:140px;">Date/Heure (local)</th>
+                    <th style="width:110px;">Symbole</th>
+                    <th>Entreprise</th>
+                    <th style="width:130px;">Prev-1</th>
+                    <th style="width:130px;">Prev-2</th>
+                    <th style="width:90px;">Source</th>
+                    <th>Notes</th>
+                </tr>
+            </thead>
+            <tbody>
+            @foreach (var ev in group.OrderBy(e => ToLocal(e.EarningsDateUtc)))
+            {
+                <tr>
+                    <td>@FormatLocal(ev.EarningsDateUtc)</td>
+                    <td><strong>@ev.Symbol</strong></td>
+                    <td>@(string.IsNullOrWhiteSpace(ev.CompanyName) ? "-" : ev.CompanyName)</td>
+                    <td>@FormatLocalDate(ev.Prev1Utc)</td>
+                    <td>@FormatLocalDate(ev.Prev2Utc)</td>
+                    <td>@(ev.Source ?? "-")</td>
+                    <td>@(string.IsNullOrWhiteSpace(ev.Notes) ? "-" : ev.Notes)</td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    }
+}
+
+@code {
+    private List<EarningsEvent> earnings = new();
+    private string? error;
+    private bool loading;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        error = null;
+        loading = true;
+        earnings.Clear();
+
+        try
+        {
+            // Précharge watchlist + portfolio
+            await Watchlist.LoadAsync();
+            await PortfolioSvc.LoadAsync();
+
+            var watchlistTickers = Watchlist.Items.Select(i => i.Ticker);
+            var portfolioTickers = (PortfolioSvc.Portfolio?.Positions ?? new List<Position>())
+                                   .Select(p => p.Security.Ticker);
+
+            var all = watchlistTickers.Concat(portfolioTickers)
+                                      .Where(s => !string.IsNullOrWhiteSpace(s))
+                                      .Select(s => s.Trim().ToUpperInvariant())
+                                      .Distinct(StringComparer.OrdinalIgnoreCase)
+                                      .ToArray();
+
+            // Récupère prochaine + deux précédentes
+            var withHistory = await EarningsSvc.GetWithHistoryAsync(all);
+
+            // Trie : ceux avec prochaine date en haut
+            earnings = withHistory
+                .OrderBy(e => e.EarningsDateUtc.HasValue ? 0 : 1)
+                .ThenBy(e => e.EarningsDateUtc)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            error = $"Erreur lors du chargement des earnings : {ex.Message}";
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    // Helpers de conversion/formatage
+    private static DateTime? ToLocal(DateTime? utc) => utc?.ToLocalTime();
+
+    // "ddd dd MMM HH:mm" ou "—"
+    private static string FormatLocal(DateTime? utc)
+    {
+        var dt = ToLocal(utc);
+        return dt.HasValue ? dt.Value.ToString("ddd dd MMM HH:mm") : "—";
+    }
+
+    // "dd MMM yyyy" ou "-"
+    private static string FormatLocalDate(DateTime? utc)
+    {
+        var dt = ToLocal(utc);
+        return dt.HasValue ? dt.Value.ToString("dd MMM yyyy") : "-";
+    }
+}

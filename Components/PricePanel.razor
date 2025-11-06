@@ -1,0 +1,126 @@
+@using TradingPlatform.Models
+@using TradingPlatform.Services.Abstractions
+@inject IPriceProvider PriceProvider
+@inject IJSRuntime JS
+
+<div class="card p-3">
+    <div class="row g-3 align-items-end">
+        <div class="col-12 col-md-3">
+            <label class="form-label">Ticker</label>
+            <InputText class="form-control" @bind-Value="symbol" placeholder="AAPL" />
+        </div>
+
+        <div class="col-6 col-md-2">
+            <label class="form-label">Current price</label>
+            <div class="fw-semibold">@((lastPrice is decimal d) ? d.ToString("0.##") : "-")</div>
+        </div>
+
+        <div class="col-6 col-md-2">
+            <label class="form-label">My limit price</label>
+            <InputNumber class="form-control" @bind-Value="limitPrice" />
+        </div>
+
+        <div class="col-12 col-md-5 d-flex flex-wrap gap-3">
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="optSMA20" @bind="optSMA20">
+                <label class="form-check-label" for="optSMA20">SMA20</label>
+            </div>
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="optSMA50" @bind="optSMA50">
+                <label class="form-check-label" for="optSMA50">SMA50</label>
+            </div>
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="optRSI" @bind="optRSI">
+                <label class="form-check-label" for="optRSI">RSI(14)</label>
+            </div>
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="optMACD" @bind="optMACD">
+                <label class="form-check-label" for="optMACD">MACD (12/26/9)</label>
+            </div>
+
+            <button class="btn btn-outline-primary ms-auto" @onclick="GetAndRender" disabled="@loading">
+                @(loading ? "Loading…" : "Get price")
+            </button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(error))
+    {
+        <div class="alert alert-warning mt-3">@error</div>
+    }
+
+    <div id="@chartId" style="width:100%;height:@(optRSI || optMACD ? "720px" : "520px");" class="mt-3"></div>
+</div>
+
+@code {
+    private string symbol = "AAPL";
+    private decimal? lastPrice;
+    private decimal? limitPrice;
+    private string? error;
+    private bool loading;
+    private readonly string chartId = $"cndl-{Guid.NewGuid():N}";
+    private List<PriceBar> bars = new();
+
+    // options indicateurs
+    private bool optSMA20 = true;
+    private bool optSMA50 = true;
+    private bool optRSI   = false;
+    private bool optMACD  = false;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+            await GetAndRender();
+    }
+
+    private async Task GetAndRender()
+    {
+        try
+        {
+            loading = true;
+            error = null;
+
+            var sym = (symbol ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(sym)) { error = "Please enter a ticker."; return; }
+
+            // 1) Last price
+            var lp = await PriceProvider.GetLastPriceAsync(sym);
+            lastPrice = lp ?? null;
+
+            // 2) History 6M
+            var end = DateTime.Today;
+            var start = end.AddMonths(-6);
+            bars = (await PriceProvider.GetDailyHistoryAsync(sym, start, end)).ToList();
+
+            await RenderJs(sym);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task RenderJs(string title)
+    {
+        var x     = bars.Select(b => b.Date.ToString("yyyy-MM-dd")).ToArray();
+        var open  = bars.Select(b => (double)b.Open ).ToArray();
+        var high  = bars.Select(b => (double)b.High ).ToArray();
+        var low   = bars.Select(b => (double)b.Low  ).ToArray();
+        var close = bars.Select(b => (double)b.Close).ToArray();
+
+        await JS.InvokeVoidAsync("Candle.render", chartId, new
+        {
+            title,
+            dates = x, open, high, low, close,
+            showSMA20 = optSMA20,
+            showSMA50 = optSMA50,
+            showRSI   = optRSI,
+            showMACD  = optMACD
+        });
+    }
+}

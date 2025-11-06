@@ -1,0 +1,130 @@
+@using TradingPlatform.Models
+@using TradingPlatform.Services.Abstractions
+@inject IPortfolioService PortfolioService
+@inject IPriceProvider PriceProvider
+@inject IJSRuntime JS
+
+<div class="card p-3">
+    <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+        <label class="me-1 fw-semibold">Ticker:</label>
+        <select class="form-select form-select-sm w-auto"
+                @bind="selectedTicker"
+                @bind:after="OnChange">
+            @foreach (var t in tickers)
+            {
+                <option value="@t">@t</option>
+            }
+        </select>
+
+        <label class="ms-3 me-1 fw-semibold">Period:</label>
+        <select class="form-select form-select-sm w-auto"
+                @bind="period"
+                @bind:after="OnChange">
+            <option>1M</option>
+            <option>3M</option>
+            <option selected>6M</option>
+            <option>1Y</option>
+            <option>YTD</option>
+        </select>
+
+        <button class="btn btn-sm btn-outline-primary ms-2" @onclick="Reload" disabled="@loading">
+            @(loading ? "Loading…" : "Refresh")
+        </button>
+    </div>
+
+    @if (error is not null)
+    {
+        <div class="alert alert-warning my-2">@error</div>
+    }
+
+    <div id="@chartId" style="width:100%;height:520px;"></div>
+
+    @if (!bars.Any() && !loading && error is null)
+    {
+        <div class="text-muted small mt-2">No data for this selection.</div>
+    }
+</div>
+
+@code {
+    private string chartId = $"cndl-{Guid.NewGuid():N}";
+    private List<string> tickers = new();
+    private string? selectedTicker;
+    private string period = "6M";
+    private bool loading;
+    private string? error;
+    private List<PriceBar> bars = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await PortfolioService.LoadAsync();
+        tickers = PortfolioService.Portfolio.Positions
+            .Select(p => p.Security.Ticker)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (tickers.Count == 0) tickers = new() { "AAPL" };
+
+        selectedTicker ??= tickers.First();
+        await LoadAndRender();
+    }
+
+    private Task OnChange() => LoadAndRender();
+
+    private (DateTime start, DateTime end) ResolvePeriod()
+    {
+        var end = DateTime.Today;
+        return period switch
+        {
+            "YTD" => (new DateTime(end.Year, 1, 1), end),
+            "1M"  => (end.AddMonths(-1), end),
+            "3M"  => (end.AddMonths(-3), end),
+            "6M"  => (end.AddMonths(-6), end),
+            "1Y"  => (end.AddYears(-1), end),
+            _     => (end.AddMonths(-6), end)
+        };
+    }
+
+    private async Task Reload() => await LoadAndRender();
+
+    private async Task LoadAndRender()
+    {
+        try
+        {
+            loading = true; error = null; bars.Clear();
+            var (start, end) = ResolvePeriod();
+
+            var sym = (selectedTicker ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(sym)) { error = "Select a ticker."; return; }
+
+            bars = (await PriceProvider.GetDailyHistoryAsync(sym, start, end)).ToList();
+            await RenderJs();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task RenderJs()
+    {
+        // payload pour Plotly
+        var x = bars.Select(b => b.Date.ToString("yyyy-MM-dd")).ToArray();
+        var close = bars.Select(b => (double)b.Close).ToArray();
+
+        // Fallback OHLC si ton PriceBar n'a pas Open/High/Low :
+        var open = close.ToArray();
+        var high = close.ToArray();
+        var low  = close.ToArray();
+
+        await JS.InvokeVoidAsync("Candle.render", chartId, new
+        {
+            title = selectedTicker,
+            dates = x, open, high, low, close
+        });
+    }
+}

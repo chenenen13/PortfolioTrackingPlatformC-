@@ -1,0 +1,72 @@
+{
+  "name": "My Portfolio",
+  "positions": [
+    {
+      "security": {
+        "ticker": "NVDA",
+        "name": "NVDA"
+      },
+      "quantity": 1,
+      "avgPrice": 203
+    },
+    {
+      "security": {
+        "ticker": "MC.PA",
+        "name": "MC.PA"
+      },
+      "quantity": 1,
+      "avgPrice": 605
+    }
+  ],
+  "trades": [
+    {
+      "ticker": "AAPL",
+      "side": 0,
+      "qty": 1,
+      "priceClean": 269.12,
+      "date": "2025-10-30T00:00:00+01:00"
+    },
+    {
+      "ticker": "NVDA",
+      "side": 0,
+      "qty": 1,
+      "priceClean": 203,
+      "date": "2025-10-30T00:00:00+01:00"
+    },
+    {
+      "ticker": "MC.PA",
+      "side": 0,
+      "qty": 1,
+      "priceClean": 605,
+      "date": "2025-10-30T00:00:00+01:00"
+    },
+    {
+      "ticker": "AAPL",
+      "side": 0,
+      "qty": 1,
+      "priceClean": 270.37,
+      "date": "2025-10-30T00:00:00+01:00"
+    },
+    {
+      "ticker": "AAPL",
+      "side": 0,
+      "qty": 1,
+      "priceClean": 1,
+      "date": "2025-10-30T00:00:00+01:00"
+    },
+    {
+      "ticker": "AAPL",
+      "side": 0,
+      "qty": 1,
+      "priceClean": 100,
+      "date": "2025-10-30T00:00:00+01:00"
+    },
+    {
+      "ticker": "AAPL",
+      "side": 0,
+      "qty": 1,
+      "priceClean": 200,
+      "date": "2025-10-30T00:00:00+01:00"
+    }
+  ]
+}

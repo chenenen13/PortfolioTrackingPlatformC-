@@ -1,0 +1,12 @@
+@page "/portfolio"
+@using TradingPlatform.Services.Abstractions
+@inject IPortfolioService PortfolioService
+
+<h1>Portfolio</h1>
+
+<!-- Éditeur d'ordres + graphe (candles + indicateurs) intégré dans PricePanel -->
+<PortfolioEditor />
+
+<PricePanel />
+
+<PositionsTable />

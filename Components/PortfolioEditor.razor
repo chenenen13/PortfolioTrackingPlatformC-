@@ -1,0 +1,86 @@
+@inject IPortfolioService PortfolioService
+
+<h3>Add a trade</h3>
+<div class="card">
+  <EditForm Model="@trade" OnValidSubmit="@Submit">
+    <DataAnnotationsValidator />
+    <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr;gap:.75rem;align-items:end;">
+      <div>
+        <label class="form-label">Ticker</label>
+        <InputText @bind-Value="trade.Ticker" class="form-control" placeholder="AAPL, MC.PA" />
+      </div>
+
+      <div>
+        <label class="form-label">Side</label>
+        <InputSelect @bind-Value="trade.Side" class="form-select">
+          <option value="Buy">Buy</option>
+          <option value="Sell">Sell</option>
+        </InputSelect>
+      </div>
+
+      <div>
+        <label class="form-label">Qty</label>
+        <InputNumber @bind-Value="trade.Qty"
+                     class="form-control"
+                     step="1" min="1"
+                     placeholder="1"
+                     title="Nombre d'actions/contrats" />
+      </div>
+
+      <div>
+        <label class="form-label">Price (unit)</label>
+        <InputNumber @bind-Value="trade.PriceClean"
+                     class="form-control"
+                     step="0.01" min="0"
+                     placeholder="ex: 269.00"
+                     title="Prix unitaire d'exécution (hors frais)" />
+      </div>
+
+      <div>
+        <label class="form-label">Date</label>
+        <InputDate @bind-Value="trade.Date" class="form-control" />
+      </div>
+    </div>
+
+    <div class="mt-2">
+      <button class="btn btn-primary" type="submit">Add</button>
+      @if (!string.IsNullOrWhiteSpace(error))
+      {
+        <span class="validation-message ms-2">@error</span>
+      }
+    </div>
+  </EditForm>
+</div>
+
+@code {
+    private Trade trade = new() { Qty = 1, PriceClean = 1m, Date = DateTime.Today, Side = TradeSide.Buy };
+    private string? error;
+
+    private async Task Submit()
+    {
+        try
+        {
+            error = null;
+            if (string.IsNullOrWhiteSpace(trade.Ticker)) { error = "Ticker is required."; return; }
+            if (trade.Qty <= 0) { error = "Quantity must be > 0."; return; }
+            if (trade.PriceClean <= 0) { error = "Price must be > 0."; return; }
+
+            trade.Ticker = SymbolHelper.Normalize(trade.Ticker.Trim());
+            var toApply = new Trade
+            {
+                Ticker = trade.Ticker, Side = trade.Side, Qty = trade.Qty,
+                PriceClean = trade.PriceClean, Date = trade.Date
+            };
+
+            PortfolioService.AddTrade(toApply);
+            await PortfolioService.SaveAsync();
+
+            trade = new() { Qty = 1, PriceClean = 1m, Date = DateTime.Today, Side = TradeSide.Buy };
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+    }
+}

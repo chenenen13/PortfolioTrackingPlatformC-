@@ -1,0 +1,30 @@
+[
+  {
+    "ticker": "ALO.PA",
+    "note": "Alstom"
+  },
+  {
+    "ticker": "RMS.PA",
+    "note": "HERMES"
+  },
+  {
+    "ticker": "C",
+    "note": "Citigroup"
+  },
+  {
+    "ticker": "MC.PA",
+    "note": "LVMH"
+  },
+  {
+    "ticker": "AAPL",
+    "note": "\uF8FF"
+  },
+  {
+    "ticker": "NVDA",
+    "note": "Nvidia"
+  },
+  {
+    "ticker": "AF.PA",
+    "note": "air france"
+  }
+]

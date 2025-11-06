@@ -1,0 +1,83 @@
+@using TradingPlatform.Models
+@using Microsoft.JSInterop
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<div class="card">
+    <h4 style="margin:0 .5rem 0">@Title</h4>
+    <div style="width:100%; height:@($"{HeightPx}px")">
+        <canvas id="@_canvasId" style="width:100%;height:100%"></canvas>
+    </div>
+</div>
+
+@code {
+    [Parameter] public string Title { get; set; } = "Cumulative";
+    [Parameter] public int HeightPx { get; set; } = 360;
+
+    [Parameter] public IReadOnlyList<ReturnPoint>? Series1Returns { get; set; }
+    [Parameter] public IReadOnlyList<ReturnPoint>? Series2Returns { get; set; }
+
+    [Parameter] public IReadOnlyList<ValuePoint>? Series1Values { get; set; }
+    [Parameter] public IReadOnlyList<ValuePoint>? Series2Values { get; set; }
+
+    [Parameter] public string Series1Name { get; set; } = "Series 1";
+    [Parameter] public string Series2Name { get; set; } = "Series 2";
+
+    private readonly string _canvasId = $"ret-{Guid.NewGuid():N}";
+    private int _version;
+    private bool _disposed;
+
+    protected override void OnParametersSet() => _version++;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_disposed) return;
+
+        var s1 = BuildJsSeries(Series1Returns, Series1Values);
+        var s2 = BuildJsSeries(Series2Returns, Series2Values);
+
+        try
+        {
+            await JS.InvokeVoidAsync("renderLineChart",
+                _canvasId, Title, s1, Series1Name, s2, Series2Name, _version);
+        }
+        catch (JSException ex)
+        {
+            Console.WriteLine($"[ReturnChart] JS error: {ex.Message}");
+        }
+    }
+
+    private static List<object> BuildJsSeries(IReadOnlyList<ReturnPoint>? returns, IReadOnlyList<ValuePoint>? values)
+    {
+        if (values != null && values.Count > 0)
+        {
+            return values
+                .OrderBy(p => p.Date)
+                .Select(p => new { date = p.Date.ToString("yyyy-MM-dd"), value = p.Value })
+                .Cast<object>()
+                .ToList();
+        }
+
+        if (returns != null && returns.Count > 0)
+        {
+            return returns
+                .OrderBy(p => p.Date)
+                .Select(p => new
+                {
+                    date = p.Date.ToString("yyyy-MM-dd"),
+                    ret = p.Return,
+                    returnCum = p.ReturnCum
+                })
+                .Cast<object>()
+                .ToList();
+        }
+
+        return new List<object>();
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        return ValueTask.CompletedTask;
+    }
+}

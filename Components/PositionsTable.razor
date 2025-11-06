@@ -1,0 +1,275 @@
+@* Components/PositionsTable.razor *@
+@using System.Globalization
+@using TradingPlatform.Models
+@using TradingPlatform.Services.Abstractions
+@inject IPortfolioService PortfolioService
+@inject IPriceProvider   PriceProvider
+
+<h3 class="mb-2">Positions</h3>
+
+<div class="card">
+  <div class="card-body">
+    <div class="d-flex justify-content-end mb-2">
+      <button class="btn btn-sm btn-outline-secondary" @onclick="RefreshAllAsync">Refresh</button>
+    </div>
+
+    <div class="table-responsive">
+      <table class="table align-middle positions-table">
+        <thead>
+          <tr>
+            <th>Ticker</th>
+            <th>Name</th>
+            <th class="text-end">Qty</th>
+            <th class="text-end">Avg price</th>
+            <th class="text-end">Last price</th>
+            <th class="text-end">MV</th>
+            <th class="text-end">Unrealized PnL</th>
+          </tr>
+        </thead>
+        <tbody>
+        @if (Positions?.Count > 0)
+        {
+          foreach (var p in Positions)
+          {
+            var t = p.Security.Ticker;
+            var hasLast = lastPrices.TryGetValue(t, out var last) && last > 0m;
+            var mv  = hasLast && p.Quantity != 0 ? p.Quantity * last : 0m;
+            var pnl = hasLast && p.Quantity != 0 ? (last - p.AvgPrice) * p.Quantity : 0m;
+
+            <tr class="clickable" @onclick="() => OpenTradePanel(p)">
+              <td><strong>@t</strong></td>
+              <td>@(names.TryGetValue(t, out var nm) && !string.IsNullOrWhiteSpace(nm) ? nm : "—")</td>
+              <td class="text-end">@p.Quantity</td>
+              <td class="text-end">@p.AvgPrice.ToString("N2", CultureInfo.InvariantCulture)</td>
+              <td class="text-end">@(hasLast ? last.ToString("N2", CultureInfo.InvariantCulture) : "—")</td>
+              <td class="text-end">@(hasLast ? mv.ToString("N2", CultureInfo.InvariantCulture) : "—")</td>
+              <td class="text-end">
+                @if (hasLast)
+                {
+                  <span class="@(pnl>=0 ? "text-success" : "text-danger")">
+                    @((pnl>=0?"+":"") + pnl.ToString("N2", CultureInfo.InvariantCulture))
+                  </span>
+                }
+                else { <span>—</span> }
+              </td>
+            </tr>
+          }
+        }
+        else
+        {
+          <tr><td colspan="7" class="text-muted">No positions yet.</td></tr>
+        }
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+@* -------- Trade modal (no Bootstrap JS required) -------- *@
+@if (showTrade)
+{
+  <div class="pt-backdrop" @onclick="CloseTradePanel"></div>
+
+  <div class="pt-modal card shadow-lg" role="dialog" aria-modal="true">
+    <div class="card-body">
+      <div class="d-flex justify-content-between align-items-start mb-3">
+        <div>
+          <h5 class="mb-1">New order</h5>
+          <div class="text-muted">
+            <strong>@selectedTicker</strong>
+            @if (!string.IsNullOrWhiteSpace(selectedName)) { <span> · @selectedName</span> }
+          </div>
+        </div>
+        <button class="btn btn-sm btn-outline-secondary" @onclick="CloseTradePanel">×</button>
+      </div>
+
+      <div class="row g-3">
+        <div class="col-md-12">
+          <label class="form-label me-3">Side</label>
+          <div class="btn-group" role="group" aria-label="side">
+            <input type="radio" class="btn-check" id="pt-side-buy"  name="pt-side" checked="@(@side==TradeSide.Buy)"  @onchange="@(_=> side = TradeSide.Buy)" />
+            <label class="btn btn-outline-success" for="pt-side-buy">Buy</label>
+
+            <input type="radio" class="btn-check" id="pt-side-sell" name="pt-side" checked="@(@side==TradeSide.Sell)" @onchange="@(_=> side = TradeSide.Sell)" />
+            <label class="btn btn-outline-danger" for="pt-side-sell">Sell</label>
+          </div>
+        </div>
+
+        <div class="col-md-4">
+          <label class="form-label">Quantity</label>
+          <input class="form-control" type="number" min="1" step="1" @bind="qty" />
+        </div>
+
+        <div class="col-md-4">
+          <label class="form-label">Price</label>
+          <input class="form-control" type="number" step="0.01" @bind="price" />
+        </div>
+
+        <div class="col-md-4">
+          <label class="form-label">Last</label>
+          <div class="input-group">
+            <input class="form-control" type="text" value="@lastForSelected.ToString("N2", CultureInfo.InvariantCulture)" readonly />
+            <button class="btn btn-outline-secondary" type="button" title="Use last" @onclick="() => price = lastForSelected">Fill</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="d-flex justify-content-end gap-2 mt-4">
+        <button class="btn btn-outline-secondary" @onclick="CloseTradePanel">Cancel</button>
+        <button class="btn btn-primary" @onclick="PlaceOrderAsync">Place order</button>
+      </div>
+    </div>
+  </div>
+}
+
+@code {
+  private List<Position> Positions = new();
+  private readonly Dictionary<string, decimal> lastPrices = new(StringComparer.OrdinalIgnoreCase);
+  private readonly Dictionary<string, string>  names      = new(StringComparer.OrdinalIgnoreCase);
+
+  // modal state
+  private bool showTrade = false;
+  private string selectedTicker = "";
+  private string selectedName   = "";
+  private TradeSide side = TradeSide.Buy;
+  private int qty = 1;
+  private decimal price = 0m;
+  private decimal lastForSelected = 0m;
+
+  protected override async Task OnInitializedAsync()
+  {
+    // ❌ Ne PAS rappeler LoadAsync ici (ça réhydrate l’ancien snapshot / seed)
+    SyncFromService();
+    await RefreshAllAsync();
+  }
+
+  // Quand tu reviens sur la page, Blazor recrée le composant. On resynchronise:
+  private void SyncFromService()
+  {
+    var src = PortfolioService.Portfolio?.Positions ?? new List<Position>();
+    // ✅ prune ici pour éviter les 0-qty
+    Positions = src.Where(p => p.Quantity != 0).ToList();
+  }
+
+  private async Task RefreshAllAsync()
+  {
+    SyncFromService();
+    await RefreshNamesAsync();
+    await RefreshPricesAsync();
+    StateHasChanged();
+  }
+
+  private async Task RefreshPricesAsync()
+  {
+    try
+    {
+      var dict = await PortfolioService.GetLastPricesAsync();
+      lastPrices.Clear();
+      foreach (var kv in dict) lastPrices[kv.Key] = kv.Value;
+    }
+    catch { /* keep previous prices on error */ }
+  }
+
+  private async Task RefreshNamesAsync()
+  {
+    names.Clear();
+    var tickers = Positions.Select(p => p.Security.Ticker).Distinct(StringComparer.OrdinalIgnoreCase);
+    foreach (var t in tickers)
+    {
+      try
+      {
+        var f = await PriceProvider.GetFundamentalsAsync(t);
+        if (!string.IsNullOrWhiteSpace(f?.Name)) names[t] = f!.Name!;
+      }
+      catch { /* ignore */ }
+    }
+  }
+
+  private async Task OpenTradePanel(Position p)
+  {
+    selectedTicker = p.Security.Ticker;
+    names.TryGetValue(selectedTicker, out selectedName);
+
+    if (!lastPrices.TryGetValue(selectedTicker, out lastForSelected) || lastForSelected <= 0)
+    {
+      var last = await PriceProvider.GetLastPriceAsync(selectedTicker);
+      lastForSelected = last ?? 0m;
+      if (lastForSelected > 0) lastPrices[selectedTicker] = lastForSelected;
+    }
+
+    side  = TradeSide.Buy;
+    qty   = p.Quantity > 0 ? p.Quantity : 1;        // valeur par défaut
+    price = lastForSelected > 0 ? lastForSelected : 0m;
+
+    showTrade = true;
+    StateHasChanged();
+  }
+
+  private void CloseTradePanel() => showTrade = false;
+
+  private async Task PlaceOrderAsync()
+  {
+    if (string.IsNullOrWhiteSpace(selectedTicker) || qty <= 0 || price <= 0m)
+      return;
+
+    var t = new Trade
+    {
+      Ticker     = selectedTicker,
+      Side       = side,
+      Qty        = qty,
+      PriceClean = price
+    };
+
+    var pos = Positions.FirstOrDefault(x =>
+      string.Equals(x.Security.Ticker, selectedTicker, StringComparison.OrdinalIgnoreCase));
+
+    // ✅ Ne crée la position que pour un BUY
+    if (pos is null)
+    {
+      if (side != TradeSide.Buy)
+      {
+        showTrade = false;
+        return; // Sell sans position → no-op
+      }
+
+      pos = new Position { Security = new Security { Ticker = selectedTicker } };
+      Positions.Add(pos);
+      PortfolioService.Portfolio.Positions.Add(pos);
+    }
+
+    pos.ApplyTrade(t);
+
+    // Persist si ton service le supporte
+    // await PortfolioService.AddTradeAsync(t);
+    // await PortfolioService.SaveAsync();
+
+    // ✅ Prune si retombe à 0
+    if (pos.Quantity == 0)
+    {
+      Positions.Remove(pos);
+      PortfolioService.Portfolio.Positions.Remove(pos);
+    }
+
+    showTrade = false;
+
+    // resync + refresh affichage
+    SyncFromService();
+    await RefreshPricesAsync();
+    StateHasChanged();
+  }
+}
+
+<style>
+.positions-table tbody tr.clickable { cursor: pointer; }
+.positions-table tbody tr.clickable:hover { background: #f6faff; }
+
+.pt-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 1040;
+}
+.pt-modal {
+  position: fixed; z-index: 1050; top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(640px, 92vw);
+  border-radius: .75rem;
+}
+</style>

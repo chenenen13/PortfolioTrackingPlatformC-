@@ -1,0 +1,204 @@
+@page "/watchlist"
+@inject WatchlistService Watchlist
+@inject IPriceProvider PriceProvider
+
+<h1>Watchlist</h1>
+
+<div class="card" style="display:grid;grid-template-columns:2fr 2fr auto auto 1fr;gap:.75rem;align-items:end;">
+    <div><label>Ticker</label><input type="text" @bind="newTicker" placeholder="AAPL, MC.PA" /></div>
+    <div><label>Note</label><input type="text" @bind="newNote" placeholder="optional" /></div>
+    <button class="btn btn-primary" @onclick="Add">Add</button>
+    <button class="btn" @onclick="Refresh">Refresh</button>
+    <div style="justify-self:end;">
+        <label>Period</label>
+        <select @bind="selectedPeriod" @bind:event="onchange">
+            <option value="1D">1D</option>
+            <option value="1W">1W</option>
+            <option value="1M">1M</option>
+            <option value="3M">3M</option>
+            <option value="6M">6M</option>
+            <option value="1Y">1Y</option>
+        </select>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(error))
+    {
+        <span class="validation-message">@error</span>
+    }
+</div>
+
+<table class="table mt-2">
+    <thead>
+        <tr>
+            <th>Ticker</th>
+            <th>Name</th>
+            <th>Sector</th>
+            <th>Last</th>
+            <th>@selectedPeriod</th>
+            <th>1D</th>
+            <th>P/E (ttm)</th>
+            <th>Sector P/E*</th>
+            <th>Note</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+    @foreach (var it in Watchlist.Items)
+    {
+        decimal? last = null;
+        if (lastMap.TryGetValue(it.Ticker, out var lastVal)) last = lastVal;
+
+        double? pchg = null;
+        if (periodMap.TryGetValue(it.Ticker, out var pval)) pchg = pval;
+
+        double? dchg = null;
+        if (dayMap.TryGetValue(it.Ticker, out var dval)) dchg = dval;
+
+        fundamentals.TryGetValue(it.Ticker, out var f);
+
+        decimal? sectorPe = null;
+        if (!string.IsNullOrWhiteSpace(f?.Sector) && sectorPeAvg.TryGetValue(f.Sector!, out var avg)) sectorPe = avg;
+
+        <tr>
+            <td>@it.Ticker</td>
+            <td>@(f?.Name ?? "-")</td>
+            <td>@(f?.Sector ?? "-")</td>
+            <td>@(last.HasValue ? last.Value.ToString("F2") : "-")</td>
+            <td>@(pchg.HasValue ? ((pchg.Value>=0?"+":"") + pchg.Value.ToString("P2")) : "-")</td>
+            <td>@(dchg.HasValue ? ((dchg.Value>=0?"+":"") + dchg.Value.ToString("P2")) : "-")</td>
+            <td>@(f?.PeTtm is decimal pe && pe>0 ? pe.ToString("F2") : "-")</td>
+            <td>@(sectorPe.HasValue ? sectorPe.Value.ToString("F2") : "-")</td>
+            <td>@it.Note</td>
+            <td><button class="btn" @onclick="() => Remove(it.Ticker)">Remove</button></td>
+        </tr>
+    }
+    </tbody>
+</table>
+
+<p style="font-size:.85rem;opacity:.75;">* Sector P/E = average of P/E for all watchlist items within the same sector (approximation).</p>
+
+@code {
+    private string newTicker = "";
+    private string? newNote;
+    private string? error;
+    private string selectedPeriod = "1M";
+
+    private readonly Dictionary<string, decimal> lastMap = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, double>  dayMap  = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, double>  periodMap = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Fundamentals> fundamentals = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, decimal> sectorPeAvg = new(StringComparer.OrdinalIgnoreCase);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Watchlist.LoadAsync();
+        await Refresh();
+    }
+
+    private async Task Refresh()
+    {
+        error = null;
+        lastMap.Clear(); dayMap.Clear(); periodMap.Clear(); fundamentals.Clear(); sectorPeAvg.Clear();
+
+        var today = DateTime.Today;
+        var (startForPeriod, label) = ResolvePeriod(today, selectedPeriod);
+        selectedPeriod = label;
+
+        foreach (var w in Watchlist.Items)
+        {
+            var t = w.Ticker;
+
+            // last
+            try
+            {
+                var px = await PriceProvider.GetLastPriceAsync(t);
+                if (px is decimal d && d > 0) lastMap[t] = d;
+            }
+            catch { }
+
+            // 1D change (deux dernières clôtures)
+            try
+            {
+                var bars = await PriceProvider.GetDailyHistoryAsync(t, today.AddDays(-12), today);
+                if (bars.Count >= 2)
+                {
+                    var c1 = bars[^1].Close;
+                    var c0 = bars[^2].Close;
+                    if (c0 > 0) dayMap[t] = (double)((c1 - c0) / c0);
+                }
+            }
+            catch { }
+
+            // Period change
+            try
+            {
+                var bars = await PriceProvider.GetDailyHistoryAsync(t, startForPeriod, today);
+                if (bars.Count >= 2)
+                {
+                    var cFirst = bars[0].Close;
+                    var cLast  = bars[^1].Close;
+                    if (cFirst > 0) periodMap[t] = (double)((cLast - cFirst) / cFirst);
+                }
+            }
+            catch { }
+
+            // Fundamentals (Secteur / P/E / Name)
+            try
+            {
+                var f = await PriceProvider.GetFundamentalsAsync(t);
+                if (f is not null)
+                {
+                    // petite heuristique: si pas de secteur et nom contient "ETF"
+                    if (string.IsNullOrWhiteSpace(f.Sector) &&
+                        (f.Name?.Contains("ETF", StringComparison.OrdinalIgnoreCase) ?? false))
+                    {
+                        f = new Fundamentals { Ticker = f.Ticker, Name = f.Name, Sector = "ETF", PeTtm = f.PeTtm };
+                    }
+                    fundamentals[t] = f;
+                }
+            }
+            catch { }
+        }
+
+        // Moyenne P/E par secteur (sur les titres de la watchlist avec P/E valide > 0)
+        var groups = fundamentals.Values
+            .Where(f => !string.IsNullOrWhiteSpace(f.Sector) && f.PeTtm.HasValue && f.PeTtm.Value > 0)
+            .GroupBy(f => f.Sector!, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var g in groups)
+        {
+            var avg = g.Average(x => x.PeTtm!.Value);
+            sectorPeAvg[g.Key] = (decimal)avg;
+        }
+
+        StateHasChanged();
+    }
+
+    private static (DateTime start, string label) ResolvePeriod(DateTime end, string p) => p switch
+    {
+        "1D" => (end.AddDays(-7), "1D"),
+        "1W" => (end.AddDays(-7), "1W"),
+        "1M" => (end.AddMonths(-1), "1M"),
+        "3M" => (end.AddMonths(-3), "3M"),
+        "6M" => (end.AddMonths(-6), "6M"),
+        "1Y" => (end.AddYears(-1), "1Y"),
+        _    => (end.AddMonths(-1), "1M")
+    };
+
+    private async Task Add()
+    {
+        error = null;
+        if (string.IsNullOrWhiteSpace(newTicker)) { error = "Enter a ticker."; return; }
+        Watchlist.Add(newTicker, newNote);
+        await Watchlist.SaveAsync();
+        newTicker = ""; newNote = null;
+        await Refresh();
+    }
+
+    private async Task Remove(string ticker)
+    {
+        Watchlist.Remove(ticker);
+        await Watchlist.SaveAsync();
+        await Refresh();
+    }
+}

@@ -1,0 +1,56 @@
+@page "/news"
+@inject NewsService NewsService
+
+<h1>Latest Financial News</h1>
+
+<IndexStrip />
+
+<div class="card p-3" style="max-width:900px;margin:0 auto;">
+    <input class="form-control" placeholder="Search topics (e.g., stocks, crypto, economy...)"
+           @bind="keyword" @bind:event="oninput" />
+    <button class="btn btn-primary mt-2" @onclick="LoadNews">Search</button>
+</div>
+
+@if (articles == null)
+{
+    <p style="text-align:center;">Loading...</p>
+}
+else if (!articles.Any())
+{
+    <p style="text-align:center;">No articles found for '@keyword'.</p>
+}
+else
+{
+    <div class="row row-cols-1 row-cols-md-2 g-4 mt-3" style="max-width:1100px;margin:0 auto;">
+        @foreach (var a in articles)
+        {
+            <div class="col">
+                <div class="card h-100 shadow-sm">
+                    @if (!string.IsNullOrWhiteSpace(a.UrlToImage))
+                    {
+                        <img src="@a.UrlToImage" class="card-img-top" style="height:200px;object-fit:cover;" />
+                    }
+                    <div class="card-body">
+                        <h5>@a.Title</h5>
+                        <p>@a.Description</p>
+                        <small class="text-muted">
+                            @a.SourceName • @a.PublishedAt.ToString("g")
+                        </small>
+                        <div class="mt-2">
+                            <a href="@a.Url" target="_blank" class="btn btn-outline-primary">Read more</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private string keyword = "markets";
+    private List<TradingPlatform.Models.NewsArticle>? articles;
+
+    protected override async Task OnInitializedAsync() => await LoadNews();
+
+    private async Task LoadNews() => articles = await NewsService.GetNewsAsync(keyword);
+}

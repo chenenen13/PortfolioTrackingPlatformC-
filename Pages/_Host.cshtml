@@ -1,0 +1,51 @@
+﻿@page "/"
+@using Microsoft.AspNetCore.Components.Web
+@namespace TradingPlatform.Pages
+@addTagHelper *, Microsoft.AspNetCore.Mvc.TagHelpers
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="~/" />
+    <link rel="stylesheet" href="css/bootstrap/bootstrap.min.css" />
+    <link href="css/site.css" rel="stylesheet" />
+    <link href="TradingPlatform.styles.css" rel="stylesheet" />
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <!-- HeadOutlet can stay prerendered -->
+    <component type="typeof(HeadOutlet)" render-mode="ServerPrerendered" />
+</head>
+<body>
+    <!-- IMPORTANT: disable prerender for the App to avoid JS/DOM races -->
+    <component type="typeof(App)" render-mode="Server" />
+
+    <div id="blazor-error-ui">
+        <environment include="Staging,Production">
+            An error has occurred. This application may no longer respond until reloaded.
+        </environment>
+        <environment include="Development">
+            An unhandled exception has occurred. See browser dev tools for details.
+        </environment>
+        <a href="" class="reload">Reload</a>
+        <a class="dismiss">🗙</a>
+    </div>
+
+    <!-- Blazor Server runtime (include ONCE) -->
+    <script src="_framework/blazor.server.js"></script>
+
+    <!-- Libraries used by your custom scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+
+    <!-- Your interop files (safe helpers first, then feature-specific) -->
+    <script src="~/js/charts.js"></script>
+    <script src="~/js/candle.js"></script>
+    <script src="~/js/returns.js"></script>
+
+    @* If you still use extra Chart.js extensions elsewhere, include them ONCE here
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial"></script>
+    <script src="~/js/charting.js"></script>
+    *@
+</body>
+</html>

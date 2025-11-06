@@ -1,0 +1,320 @@
+﻿@page "/"
+@using System.Globalization
+@using TradingPlatform.Models
+@using TradingPlatform.Services.Abstractions
+@using Microsoft.AspNetCore.Components.Forms
+@inject IPortfolioService PortfolioService
+@inject IPriceProvider   PriceProvider
+@inject IJSRuntime       JS
+
+<h2 class="mt-4 mb-3">🏠 Dashboard</h2>
+
+<div class="row g-3">
+  <!-- LEFT: Controls + AUM -->
+  <div class="col-md-5">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h5 class="card-title">Benchmark</h5>
+
+        <InputSelect class="form-select" @bind-Value="SelectedBenchmark">
+          @foreach (var kv in Benchmarks)
+          {
+            <option value="@kv.Key">@kv.Value</option>
+          }
+        </InputSelect>
+
+        <div class="mt-3">
+          <label class="form-label">Period</label>
+          <div class="row g-2">
+            <div class="col-6">
+              <InputDate @bind-Value="StartDate" class="form-control" />
+            </div>
+            <div class="col-6">
+              <InputDate @bind-Value="EndDate" class="form-control" />
+            </div>
+          </div>
+          <div class="mt-2 d-flex gap-2">
+            <button class="btn btn-outline-secondary btn-sm" @onclick="() => PresetDays(90)">3M</button>
+            <button class="btn btn-outline-secondary btn-sm" @onclick="() => PresetDays(180)">6M</button>
+            <button class="btn btn-outline-secondary btn-sm" @onclick="() => PresetDays(365)">1Y</button>
+            <button class="btn btn-outline-secondary btn-sm" @onclick="() => PresetDays(1095)">3Y</button>
+          </div>
+        </div>
+
+        <button class="btn btn-primary mt-3 w-100" @onclick="RefreshAsync">Update</button>
+      </div>
+    </div>
+
+    <!-- AUM below controls -->
+    <div class="card shadow-sm mt-3">
+      <div class="card-body">
+        <h5 class="card-title">AUM / Valuation</h5>
+        <p class="text-muted mb-1">Sum of positions (spot price × quantity)</p>
+        <h3>@(Aum.HasValue ? Aum.Value.ToString("N2", CultureInfo.InvariantCulture) : "—")</h3>
+        <small class="text-muted">*Simple assumption without FX conversion.</small>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: Positions only -->
+  <div class="col-md-7">
+    <div class="card shadow-sm positions-card h-100">
+      <div class="card-body">
+        <h5 class="card-title">Positions</h5>
+
+        @if (Positions.Count == 0)
+        {
+          <div class="text-muted">No positions.</div>
+        }
+        else
+        {
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead>
+                <tr>
+                  <th style="min-width:140px">Ticker</th>
+                  <th>Name</th>
+                  <th class="text-end" style="min-width:90px">Qty</th>
+                  <th class="text-end" style="min-width:120px">Last Price</th>
+                </tr>
+              </thead>
+              <tbody>
+                @foreach (var p in Positions)
+                {
+                  var t = p.Security.Ticker;
+                  var name = fundamentals.TryGetValue(t, out var fName) && !string.IsNullOrWhiteSpace(fName) ? fName : "—";
+                  var last = lastPrices.TryGetValue(t, out var px) ? px : (decimal?)null;
+
+                  <tr>
+                    <td><strong>@t</strong></td>
+                    <td>@name</td>
+                    <td class="text-end">@p.Quantity</td>
+                    <td class="text-end">@(last.HasValue ? last.Value.ToString("N2", CultureInfo.InvariantCulture) : "—")</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+          <small class="text-muted">Loaded from portfolio service.</small>
+        }
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Chart -->
+<div class="card shadow-sm mt-4 chart-card">
+  <div class="card-body position-relative">
+    <h5 class="card-title">Comparison Portfolio vs Benchmark</h5>
+    <div class="ratio ratio-21x9">
+      <canvas id="dashChart"></canvas>
+    </div>
+  </div>
+</div>
+
+@code {
+  // ====== State ======
+  private List<Position> Positions = new();
+
+  private readonly Dictionary<string, string> Benchmarks = new(StringComparer.OrdinalIgnoreCase)
+  {
+    ["^FCHI"]     = "CAC 40",
+    ["^GSPC"]     = "S&P 500",
+    ["^GDAXI"]    = "DAX",
+    ["^IXIC"]     = "NASDAQ Composite",
+    ["^STOXX50E"] = "EURO STOXX 50"
+  };
+
+  private string SelectedBenchmark = "^FCHI";
+  private DateTime StartDate = DateTime.UtcNow.Date.AddMonths(-6);
+  private DateTime EndDate   = DateTime.UtcNow.Date;
+
+  private decimal? Aum;
+
+  // live data caches for the positions card
+  private readonly Dictionary<string, decimal> lastPrices = new(StringComparer.OrdinalIgnoreCase);
+  private readonly Dictionary<string, string>  fundamentals = new(StringComparer.OrdinalIgnoreCase);
+
+  // chart
+  private List<string>  ChartLabels     = new();
+  private List<decimal> SeriesPortfolio = new();
+  private List<decimal> SeriesBenchmark = new();
+  private bool _shouldDraw;
+
+  private string BenchmarkDisplay =>
+      Benchmarks.TryGetValue(SelectedBenchmark, out var name) ? name : SelectedBenchmark;
+
+  private static string D(DateTime dt) => dt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+  // ====== Lifecycle ======
+  protected override async Task OnInitializedAsync()
+  {
+    Positions = PortfolioService.Portfolio?.Positions?
+                  .Where(p => p.Quantity != 0)
+                  .ToList() ?? new();
+
+    await RefreshAsync();
+  }
+
+  protected override async Task OnAfterRenderAsync(bool firstRender)
+  {
+    if (_shouldDraw)
+    {
+      _shouldDraw = false;
+      await DrawChartAsync();
+    }
+  }
+
+  // ====== UI ======
+  private void PresetDays(int days)
+  {
+    EndDate = DateTime.UtcNow.Date;
+    StartDate = EndDate.AddDays(-days);
+  }
+
+  private async Task RefreshAsync()
+  {
+    // reload positions
+    Positions = PortfolioService.Portfolio?.Positions?
+                  .Where(p => p.Quantity != 0)
+                  .ToList() ?? new();
+
+    await RefreshPricesAndNamesAsync();
+    await ComputeAumAsync();
+    await BuildComparisonAsync();
+
+    _shouldDraw = true;
+    StateHasChanged();
+  }
+
+  private async Task RefreshPricesAndNamesAsync()
+  {
+    lastPrices.Clear();
+    fundamentals.Clear();
+
+    // batch through holdings for latest price + name
+    foreach (var p in Positions)
+    {
+      var t = p.Security.Ticker;
+
+      // price
+      var last = await PriceProvider.GetLastPriceAsync(t);
+      if (last.HasValue) lastPrices[t] = last.Value;
+
+      // name (via fundamentals)
+      var f = await PriceProvider.GetFundamentalsAsync(t);
+      if (!string.IsNullOrWhiteSpace(f?.Name))
+        fundamentals[t] = f!.Name!;
+    }
+  }
+
+  private async Task ComputeAumAsync()
+  {
+    if (Positions.Count == 0) { Aum = 0m; return; }
+
+    decimal sum = 0m;
+    foreach (var p in Positions)
+    {
+      if (!lastPrices.TryGetValue(p.Security.Ticker, out var last))
+      {
+        var fetched = await PriceProvider.GetLastPriceAsync(p.Security.Ticker);
+        if (fetched.HasValue) last = lastPrices[p.Security.Ticker] = fetched.Value;
+      }
+      if (last > 0) sum += p.Quantity * last;
+    }
+    Aum = sum;
+  }
+
+  // ====== Chart data ======
+  private async Task BuildComparisonAsync()
+  {
+    var benchBars = await PriceProvider.GetDailyHistoryAsync(SelectedBenchmark, StartDate, EndDate);
+    var bench = benchBars.OrderBy(b => b.Date).ToList();
+    var dates = bench.Select(b => b.Date).Distinct().ToList();
+
+    if (dates.Count == 0)
+    {
+      ChartLabels = new();
+      SeriesBenchmark = new();
+      SeriesPortfolio = new();
+      return;
+    }
+
+    if (Positions.Count == 0)
+    {
+      ChartLabels     = dates.Select(D).ToList();
+      SeriesBenchmark = NormalizeBase100(bench.Select(b => b.Close).ToList());
+      SeriesPortfolio = dates.Select(_ => 0m).ToList();
+      return;
+    }
+
+    // Price history by ticker
+    var histByTicker = new Dictionary<string, List<PriceBar>>(StringComparer.OrdinalIgnoreCase);
+    foreach (var pos in Positions)
+    {
+      var bars = await PriceProvider.GetDailyHistoryAsync(pos.Security.Ticker, StartDate, EndDate);
+      histByTicker[pos.Security.Ticker] = bars.OrderBy(b => b.Date).ToList();
+    }
+
+    // Forward-filled map on benchmark dates
+    var ffByTicker = new Dictionary<string, Dictionary<DateTime, decimal>>(StringComparer.OrdinalIgnoreCase);
+    foreach (var kv in histByTicker)
+    {
+      var map = kv.Value.ToDictionary(x => x.Date, x => x.Close);
+      var ff = new Dictionary<DateTime, decimal>();
+      decimal last = 0m;
+      foreach (var d in dates)
+      {
+        if (map.TryGetValue(d, out var px) && px > 0) last = px;
+        if (last > 0) ff[d] = last;
+      }
+      ffByTicker[kv.Key] = ff;
+    }
+
+    // Portfolio value (carry forward after start)
+    var portSeries = new List<decimal>(dates.Count);
+    foreach (var d in dates)
+    {
+      decimal total = 0m;
+      bool allHaveData = true;
+
+      foreach (var pos in Positions)
+      {
+        var ff = ffByTicker[pos.Security.Ticker];
+        if (!ff.TryGetValue(d, out var px))
+        {
+          allHaveData = false;
+          break;
+        }
+        total += pos.Quantity * px;
+      }
+
+      portSeries.Add(allHaveData ? total : (portSeries.Count > 0 ? portSeries[^1] : 0m));
+    }
+
+    SeriesBenchmark = NormalizeBase100(bench.Select(b => b.Close).ToList());
+    SeriesPortfolio = NormalizeBase100(portSeries);
+    ChartLabels     = dates.Select(D).ToList();
+  }
+
+  private static List<decimal> NormalizeBase100(List<decimal> values)
+  {
+    if (values.Count == 0) return new();
+    var baseVal = values.FirstOrDefault(v => v > 0);
+    return values.Select(v => baseVal > 0 ? (v / baseVal) * 100m : 0m).ToList();
+  }
+
+  private async Task DrawChartAsync()
+  {
+    if (ChartLabels.Count == 0) return;
+
+    var datasets = new object[]
+    {
+      new { label = "Portfolio (base 100)", data = SeriesPortfolio },
+      new { label = $"{BenchmarkDisplay} (base 100)", data = SeriesBenchmark }
+    };
+
+    await JS.InvokeVoidAsync("blazorCharts.renderLineChart",
+      "dashChart", ChartLabels, datasets, $"Portfolio vs {BenchmarkDisplay}");
+  }
+}

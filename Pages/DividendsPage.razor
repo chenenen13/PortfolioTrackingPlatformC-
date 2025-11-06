@@ -1,0 +1,119 @@
+@page "/dividends"
+@inject WatchlistService Watchlist
+@inject IPriceProvider PriceProvider
+
+<h1>Dividends Calendar (Watchlist)</h1>
+
+<div class="card">
+    <label>Window</label>
+    <select @bind="windowDays">
+        <option value="60">Next 60 days</option>
+        <option value="90">Next 90 days</option>
+        <option value="180">Next 6 months</option>
+        <option value="365">Next 12 months</option>
+    </select>
+    <button class="btn btn-primary" @onclick="Load">Refresh</button>
+</div>
+
+@if (upcoming.Any())
+{
+    <h3 class="mt-2">Upcoming</h3>
+    @foreach (var g in upcoming.GroupBy(x => new DateTime(x.ExDate.Year, x.ExDate.Month, 1)).OrderBy(g => g.Key))
+    {
+        <div class="card mt-2">
+            <h4>@g.Key.ToString("MMMM yyyy")</h4>
+            <table class="table">
+                <thead><tr><th>Date</th><th>Ticker</th><th>Amount</th></tr></thead>
+                <tbody>
+                @foreach (var d in g)
+                {
+                    <tr>
+                        <td>@d.ExDate.ToString("yyyy-MM-dd")</td>
+                        <td>@d.Ticker</td>
+                        <td>@d.Amount.ToString("F2")</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+}
+else
+{
+    <p class="mt-2">No upcoming dividends in the selected window.</p>
+}
+
+<h3 class="mt-3">Past (last 12 months)</h3>
+@if (past.Any())
+{
+    @foreach (var g in past.GroupBy(x => new DateTime(x.ExDate.Year, x.ExDate.Month, 1)).OrderByDescending(g => g.Key))
+    {
+        <div class="card mt-2">
+            <h4>@g.Key.ToString("MMMM yyyy")</h4>
+            <table class="table">
+                <thead><tr><th>Date</th><th>Ticker</th><th>Amount</th></tr></thead>
+                <tbody>
+                @foreach (var d in g)
+                {
+                    <tr>
+                        <td>@d.ExDate.ToString("yyyy-MM-dd")</td>
+                        <td>@d.Ticker</td>
+                        <td>@d.Amount.ToString("F2")</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+}
+else
+{
+    <p>No past dividends found.</p>
+}
+
+@code {
+    private int windowDays = 60;
+    private readonly List<DividendEvent> upcoming = new();
+    private readonly List<DividendEvent> past = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Watchlist.LoadAsync();
+        await Load();
+    }
+
+    private async Task Load()
+    {
+        upcoming.Clear(); past.Clear();
+
+        var tickers = Watchlist.Items
+            .Select(i => i.Ticker)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var today = DateTime.Today;
+        var futureEnd = today.AddDays(windowDays);
+        var pastStart = today.AddYears(-1);
+
+        foreach (var t in tickers)
+        {
+            try
+            {
+                var ups = await PriceProvider.GetDividendsAsync(t, today.AddDays(-1), futureEnd);
+                upcoming.AddRange(ups.Where(x => x.ExDate >= today));
+            }
+            catch { }
+
+            try
+            {
+                var pst = await PriceProvider.GetDividendsAsync(t, pastStart, today);
+                past.AddRange(pst.Where(x => x.ExDate < today));
+            }
+            catch { }
+        }
+
+        upcoming.Sort((a,b) => a.ExDate.CompareTo(b.ExDate));
+        past.Sort((a,b) => b.ExDate.CompareTo(a.ExDate));
+        StateHasChanged();
+    }
+}

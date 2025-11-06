@@ -1,0 +1,91 @@
+@inject IPriceProvider PriceProvider
+
+<div style="display:flex;justify-content:center;margin:0.75rem 0;">
+    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;justify-content:center;max-width:1100px;">
+        @foreach (var card in cards)
+        {
+            var cls = card.ChangePct is double ch && ch >= 0 ? "text-success" : "text-danger";
+            <a href="@card.Url" target="_blank"
+               class="card"
+               style="padding:.6rem .9rem; text-decoration:none; min-width:160px;">
+                <div style="font-weight:600">@card.Name</div>
+                <div style="font-size:0.9rem;opacity:.8">@card.Ticker</div>
+                <div style="margin-top:.25rem;">
+                    <span style="font-weight:600">@((card.Last>0 ? card.Last.ToString("F2") : "-"))</span>
+                    <span class="@cls" style="margin-left:.35rem">
+                        @(card.ChangePct is double p ? (p>=0?"+":"") + p.ToString("P2") : "-")
+                    </span>
+                </div>
+            </a>
+        }
+    </div>
+</div>
+
+@code {
+    private record IndexDef(string Name, string Ticker, string Url);
+
+    // ✅ Added: MSCI World (ACWI), EURO STOXX 50 (^STOXX50E),
+    //           Shanghai Composite (000001.SS), Shenzhen Component (399001.SZ)
+    private readonly IndexDef[] defs = new[]
+    {
+        // US & Europe (existing)
+        new IndexDef("S&P 500",        "^GSPC",     "https://finance.yahoo.com/quote/%5EGSPC"),
+        new IndexDef("Dow Jones",      "^DJI",      "https://finance.yahoo.com/quote/%5EDJI"),
+        new IndexDef("Nasdaq 100",     "^NDX",      "https://finance.yahoo.com/quote/%5ENDX"),
+        new IndexDef("FTSE 100",       "^FTSE",     "https://finance.yahoo.com/quote/%5EFTSE"),
+        new IndexDef("CAC 40",         "^FCHI",     "https://finance.yahoo.com/quote/%5EFCHI"),
+        new IndexDef("DAX",            "^GDAXI",    "https://finance.yahoo.com/quote/%5EGDAXI"),
+
+        // 🌍 World
+        new IndexDef("MSCI World (ETF)", "ACWI",    "https://finance.yahoo.com/quote/ACWI"),
+
+        // 🇪🇺 Eurozone broader
+        new IndexDef("EURO STOXX 50", "^STOXX50E",  "https://finance.yahoo.com/quote/%5ESTOXX50E"),
+
+        // 🇯🇵 & 🇭🇰 (existing)
+        new IndexDef("Nikkei 225",     "^N225",     "https://finance.yahoo.com/quote/%5EN225"),
+        new IndexDef("Hang Seng",      "^HSI",      "https://finance.yahoo.com/quote/%5EHSI"),
+
+        // 🇨🇳 Mainland China
+        new IndexDef("Shanghai Composite", "000001.SS", "https://finance.yahoo.com/quote/000001.SS"),
+    };
+
+    private readonly List<(string Name, string Ticker, string Url, decimal Last, double? ChangePct)> cards = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Load();
+    }
+
+    private async Task Load()
+    {
+        cards.Clear();
+        var today = DateTime.Today;
+
+        foreach (var d in defs)
+        {
+            decimal last = 0m;
+            double? change = null;
+
+            try
+            {
+                // Last price
+                var px = await PriceProvider.GetLastPriceAsync(d.Ticker);
+                if (px is decimal p && p > 0) last = p;
+
+                // Daily change = last two valid closes over ~10 days
+                var bars = await PriceProvider.GetDailyHistoryAsync(d.Ticker, today.AddDays(-12), today);
+                if (bars.Count >= 2)
+                {
+                    var c1 = bars[^1].Close;
+                    var c0 = bars[^2].Close;
+                    if (c0 > 0) change = (double)((c1 - c0) / c0);
+                }
+            }
+            catch { /* tolerate per-index failures */ }
+
+            cards.Add((d.Name, d.Ticker, d.Url, last, change));
+        }
+        StateHasChanged();
+    }
+}

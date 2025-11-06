@@ -1,0 +1,85 @@
+@using TradingPlatform.Services.Abstractions
+@namespace TradingPlatform.Components
+
+@* ----------- VIEW ----------- *@
+@if (Data is null)
+{
+    <div class="card p-3">
+        <div class="text-muted">No data.</div>
+    </div>
+}
+else
+{
+    <div class="card p-3 metrics-card">
+        <h4 class="mb-3">@Title</h4>
+
+        <div class="row gy-2">
+            <div class="col-12 col-md-6">
+                @Metric("Alpha (annual)", FPct(Data.AlphaAnnual), tone: TonePosNeg(Data.AlphaAnnual))
+                @Metric("Beta", FNum(Data.Beta, 3))
+                @Metric("R²", FNum(Data.RSquared, 3))
+                @Metric("Volatility (annual)", FPct(Data.VolatilityAnnual))
+            </div>
+
+            <div class="col-12 col-md-6">
+                @Metric("Tracking error", FPct(Data.TrackingErrorAnnual))
+                @Metric("Information ratio", FNum(Data.InformationRatio, 2), tone: TonePosNeg(Data.InformationRatio))
+                @Metric("Sharpe (portfolio)", FNum(Data.SharpePortfolio, 2), tone: TonePosNeg(Data.SharpePortfolio))
+                @Metric("Sharpe (benchmark)", FNum(Data.SharpeBenchmark, 2), tone: TonePosNeg(Data.SharpeBenchmark))
+            </div>
+        </div>
+    </div>
+}
+
+@* ----------- CODE ----------- *@
+@code {
+    [Parameter] public string Title { get; set; } = "Metrics";
+    [Parameter] public MetricsResult? Data { get; set; }
+
+    // format helpers (CORRECT: $"{v:F2}" etc.)
+    private static string FNum(double v, int d) => v.ToString($"F{d}");
+    private static string FPct(double v) => v.ToString("P2");
+
+    private static string TonePosNeg(double v) => v switch
+    {
+        > 0 => "pos",
+        < 0 => "neg",
+        _   => ""
+    };
+
+    // small inline "component-like" renderer
+    private RenderFragment Metric(string label, string value, string? tone = null) => __builder =>
+    {
+        var badgeClass = tone switch
+        {
+            "pos" => "badge rounded-pill bg-success-subtle text-success fw-semibold",
+            "neg" => "badge rounded-pill bg-danger-subtle text-danger fw-semibold",
+            _     => "badge rounded-pill bg-secondary-subtle text-body fw-semibold"
+        };
+
+        __builder.OpenElement(0, "div");
+        __builder.AddAttribute(1, "class", "d-flex justify-content-between align-items-center py-1 metric-row");
+        __builder.OpenElement(2, "span");
+        __builder.AddAttribute(3, "class", "metric-label");
+        __builder.AddContent(4, label);
+        __builder.CloseElement(); // span label
+        __builder.OpenElement(5, "span");
+        __builder.AddAttribute(6, "class", badgeClass);
+        __builder.AddContent(7, value);
+        __builder.CloseElement(); // span value
+        __builder.CloseElement(); // row
+    };
+}
+
+@* ----------- STYLE ----------- *@
+<style>
+    .metrics-card { border: 1px solid rgba(0,0,0,.075); }
+    .metric-row  { border-bottom: 1px dashed rgba(0,0,0,.08); }
+    .metric-row:last-child { border-bottom: none; }
+    .metric-label { color: var(--bs-secondary-color); }
+
+    /* Bootstrap-like subtle backgrounds (si BS 5.3+ n'est pas dispo) */
+    .bg-success-subtle { background-color: rgba(25,135,84,.12); }
+    .bg-danger-subtle  { background-color: rgba(220,53,69,.12); }
+    .bg-secondary-subtle { background-color: rgba(108,117,125,.12); }
+</style>

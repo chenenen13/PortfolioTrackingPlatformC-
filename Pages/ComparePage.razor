@@ -1,0 +1,289 @@
+@page "/compare"
+@using System.Globalization
+@using TradingPlatform.Services.Abstractions
+@using TradingPlatform.Models
+@using Microsoft.AspNetCore.Components.Forms
+@inject IPriceProvider PriceProvider
+@inject IJSRuntime JS
+
+<h2 class="mt-4 mb-3">📊 Compare &amp; Metrics</h2>
+
+<div class="card shadow-sm mb-3">
+  <div class="card-body">
+    <div class="row g-3 align-items-end">
+      <div class="col-md-6">
+        <label class="form-label">Tickers (comma-separated)</label>
+        <InputText class="form-control" @bind-Value="TickersInput" placeholder="AAPL,MSFT,^GSPC" />
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">Start</label>
+        <InputDate @bind-Value="StartDate" class="form-control" />
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">End</label>
+        <InputDate @bind-Value="EndDate" class="form-control" />
+      </div>
+    </div>
+    <div class="mt-3 d-flex gap-2">
+      <button class="btn btn-outline-secondary btn-sm" @onclick="() => PresetDays(90)">3M</button>
+      <button class="btn btn-outline-secondary btn-sm" @onclick="() => PresetDays(180)">6M</button>
+      <button class="btn btn-outline-secondary btn-sm" @onclick="() => PresetDays(365)">1Y</button>
+      <button class="btn btn-outline-secondary btn-sm" @onclick="() => PresetDays(1095)">3Y</button>
+      <button class="btn btn-primary ms-auto" @onclick="RefreshAsync">Compare</button>
+    </div>
+  </div>
+</div>
+
+<div class="card shadow-sm chart-card">
+  <div class="card-body">
+    <h5 class="card-title">Comparison (base 100)</h5>
+    <div class="ratio ratio-21x9">
+      <canvas id="cmpChart"></canvas>
+    </div>
+  </div>
+</div>
+
+<div class="card shadow-sm mt-3">
+  <div class="card-body">
+    <h5 class="card-title">Metrics (selected period)</h5>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle">
+        <thead>
+          <tr>
+            <th>Ticker</th>
+            <th class="text-end">Return %</th>
+            <th class="text-end">Ann. Vol.</th>
+            <th class="text-end">Sharpe</th>
+            <th class="text-end">Max Drawdown</th>
+            <th class="text-end">CAGR</th>
+            <th>Period</th>
+          </tr>
+        </thead>
+        <tbody>
+          @foreach (var m in MetricsList)
+          {
+            <tr>
+              <td><strong>@m.Ticker</strong></td>
+              <td class="text-end">@m.TotalReturnPct.ToString("0.00")%</td>
+              <td class="text-end">@m.AnnualVol.ToString("0.00")%</td>
+              <td class="text-end">@m.Sharpe.ToString("0.00")</td>
+              <td class="text-end">@m.MaxDrawdownPct.ToString("0.00")%</td>
+              <td class="text-end">@m.CagrPct.ToString("0.00")%</td>
+              <td>@FormatDate(m.Start) → @FormatDate(m.End)</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+    <small class="text-muted">Sharpe with r<sub>f</sub>=0, daily returns, 252 trading days/year.</small>
+  </div>
+</div>
+
+@code {
+  // ----------- State -----------
+  private string TickersInput = "AAPL,MSFT,^GSPC";
+  private DateTime StartDate = DateTime.UtcNow.Date.AddMonths(-12);
+  private DateTime EndDate   = DateTime.UtcNow.Date;
+
+  private List<string> Labels = new();
+  private List<(string Ticker, List<decimal> Series)> Series = new();
+
+  private bool _shouldDraw = false;
+
+  private record AssetMetrics(
+    string Ticker,
+    DateTime Start,
+    DateTime End,
+    decimal TotalReturnPct,
+    decimal AnnualVol,
+    decimal Sharpe,
+    decimal MaxDrawdownPct,
+    decimal CagrPct
+  );
+  private List<AssetMetrics> MetricsList = new();
+
+  private static string FormatDate(DateTime d) =>
+      d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+  // ----------- Lifecycle -----------
+  protected override async Task OnInitializedAsync() => await RefreshAsync();
+
+  protected override async Task OnAfterRenderAsync(bool firstRender)
+  {
+    if (!_shouldDraw) return;
+    _shouldDraw = false;
+    await DrawChartAsync();
+  }
+
+  private void PresetDays(int days)
+  {
+    EndDate = DateTime.UtcNow.Date;
+    StartDate = EndDate.AddDays(-days);
+  }
+
+  // ----------- Main actions -----------
+  private async Task RefreshAsync()
+  {
+    var tickers = TickersInput
+      .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+      .Distinct(StringComparer.OrdinalIgnoreCase)
+      .ToList();
+
+    Labels.Clear();
+    Series.Clear();
+    MetricsList.Clear();
+
+    // 1) Fetch history for each ticker
+    var rawByTicker = new Dictionary<string, List<(DateTime d, decimal close)>>(StringComparer.OrdinalIgnoreCase);
+    foreach (var t in tickers)
+    {
+      var bars = await PriceProvider.GetDailyHistoryAsync(t, StartDate, EndDate);
+      rawByTicker[t] = bars
+        .Where(b => b.Close > 0)
+        .OrderBy(b => b.Date)
+        .Select(b => (b.Date, b.Close))
+        .ToList();
+    }
+
+    if (rawByTicker.Values.All(v => v.Count == 0))
+    {
+      StateHasChanged();
+      return;
+    }
+
+    // 2) Union of dates
+    var allDates = rawByTicker.Values.SelectMany(v => v.Select(x => x.d))
+                                     .Distinct().OrderBy(d => d).ToList();
+
+    // 3) Map per ticker + forward-fill across allDates
+    var maps = rawByTicker.ToDictionary(
+      kv => kv.Key,
+      kv => kv.Value.ToDictionary(x => x.d, x => x.close));
+
+    var ffSeries = new Dictionary<string, List<decimal>>(StringComparer.OrdinalIgnoreCase);
+    foreach (var t in tickers)
+    {
+      var map = maps[t];
+      var series = new List<decimal>(allDates.Count);
+      decimal last = 0m;
+      foreach (var d in allDates)
+      {
+        if (map.TryGetValue(d, out var px) && px > 0) last = px;
+        series.Add(last); // 0 until first known price
+      }
+      ffSeries[t] = series;
+    }
+
+    // 4) Drop leading rows where any ticker hasn't started
+    int startIdx = 0;
+    for (; startIdx < allDates.Count; startIdx++)
+    {
+      bool anyZero = false;
+      foreach (var t in tickers)
+        if (ffSeries[t][startIdx] == 0m) { anyZero = true; break; }
+      if (!anyZero) break;
+    }
+
+    var dates = allDates.Skip(startIdx).ToList();
+    if (dates.Count == 0)
+    {
+      StateHasChanged();
+      return;
+    }
+
+    Labels = dates.Select(d => d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)).ToList();
+
+    // 5) Normalized (base 100) series + metrics on raw values
+    foreach (var t in tickers)
+    {
+      var vals = ffSeries[t].Skip(startIdx).ToList();
+      var b0 = vals.FirstOrDefault(v => v > 0);
+      var norm = vals.Select(v => b0 > 0 ? (v / b0) * 100m : 0m).ToList();
+      Series.Add((t, norm));
+
+      var tr = TotalReturnPct(vals);
+      var (volAnn, sharpe) = AnnualVolAndSharpe(vals, 0m);
+      var maxdd = MaxDrawdownPct(vals);
+      var cagr  = CAGR(vals, dates.First(), dates.Last());
+
+      MetricsList.Add(new AssetMetrics(
+        t, dates.First(), dates.Last(),
+        tr, volAnn, sharpe, maxdd, cagr
+      ));
+    }
+
+    // 6) Defer JS render
+    _shouldDraw = true;
+    StateHasChanged();
+  }
+
+  private async Task DrawChartAsync()
+  {
+    if (Labels.Count == 0 || Series.Count == 0) return;
+
+    try
+    {
+      var datasets = Series.Select(s => new { label = s.Ticker, data = s.Series }).ToArray();
+      await JS.InvokeVoidAsync("blazorCharts.renderLineChart", "cmpChart", Labels, datasets, "Comparison (base 100)");
+    }
+    catch (JSException ex)
+    {
+      Console.WriteLine($"[Compare] JSInterop skipped: {ex.Message}");
+    }
+  }
+
+  // ----------- Metrics helpers -----------
+  private static decimal TotalReturnPct(List<decimal> values)
+  {
+    if (values.Count < 2) return 0m;
+    var r = (values[^1] / values[0]) - 1m;
+    return r * 100m;
+  }
+
+  private static (decimal volAnnPct, decimal sharpe) AnnualVolAndSharpe(List<decimal> values, decimal rf)
+  {
+    if (values.Count < 2) return (0m, 0m);
+    var rets = new List<decimal>(values.Count - 1);
+    for (int i = 1; i < values.Count; i++)
+    {
+      var prev = values[i - 1];
+      var curr = values[i];
+      var r = prev == 0m ? 0m : (curr / prev) - 1m;
+      rets.Add(r);
+    }
+
+    var avg = rets.Average();
+    var variance = rets.Count > 1
+      ? rets.Select(x => (x - avg) * (x - avg)).Sum() / (rets.Count - 1)
+      : 0m;
+
+    var sdDaily = (decimal)Math.Sqrt((double)variance);
+    var volAnn = sdDaily * (decimal)Math.Sqrt(252d);
+    var sharpe = volAnn == 0m ? 0m : ((avg * 252m) - rf) / volAnn;
+
+    return (volAnn * 100m, sharpe);
+  }
+
+  private static decimal MaxDrawdownPct(List<decimal> values)
+  {
+    if (values.Count == 0) return 0m;
+    decimal peak = values[0];
+    decimal maxDd = 0m; // negative
+
+    foreach (var v in values)
+    {
+      if (v > peak) peak = v;
+      var dd = peak == 0m ? 0m : (v / peak) - 1m;
+      if (dd < maxDd) maxDd = dd;
+    }
+    return -maxDd * 100m; // positive %
+  }
+
+  private static decimal CAGR(List<decimal> values, DateTime start, DateTime end)
+  {
+    if (values.Count < 2) return 0m;
+    var years = Math.Max((end - start).TotalDays / 365.25, 0.0001);
+    var cagr = Math.Pow((double)(values[^1] / values[0]), 1.0 / years) - 1.0;
+    return (decimal)cagr * 100m;
+  }
+}
