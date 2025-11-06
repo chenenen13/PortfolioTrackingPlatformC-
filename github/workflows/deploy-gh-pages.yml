@@ -1,0 +1,59 @@
+name: Deploy Blazor WASM to GitHub Pages
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish
+        run: dotnet publish -c Release
+
+      # Copie le dossier wwwroot du publish comme artefact de Pages
+      - name: Prepare wwwroot
+        run: |
+          PUBLISH_DIR=$(find . -type d -path "*/bin/Release/*/publish/wwwroot" | head -n 1)
+          echo "Using $PUBLISH_DIR"
+          mkdir -p ./_site
+          cp -r "$PUBLISH_DIR"/* ./_site
+          touch ./_site/.nojekyll
+          # (Option B) Si tu n'as pas utilisé StaticWebAssetBasePath, décommente:
+          # sed -i 's|<base href="/" />|<base href="/PortfolioTrackingPlatformC-/" />|' ./_site/index.html
+          # Fallback SPA pour le routage client:
+          cp ./_site/index.html ./_site/404.html
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
